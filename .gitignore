@@ -1,0 +1,10 @@
+node_modules/
+output/
+outputs/
+cache/
+browser-cache/
+work/
+.yarn/
+*.log
+.yarn-cache/
+proxy.txt
