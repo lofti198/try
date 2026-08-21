@@ -151,24 +151,52 @@ async function withPage(contexts, executablePath, proxy, proxyIndex, browserCach
   }
 }
 
-async function loadCatalog(contexts, executablePath, url, proxy, proxyIndex, cacheDir, browserCacheDir, headless) {
+const CAPTCHA_BACKOFF_MS = 60000;
+
+function isCatalogDataEmpty(data) {
+  return data.productUrls.length === 0 && data.categoryUrls.length === 0 && !data.nextUrl;
+}
+
+async function loadCatalog(contexts, executablePath, url, proxy, proxyIndex, cacheDir, browserCacheDir, headless, onProgress) {
   return withPage(contexts, executablePath, proxy, proxyIndex, browserCacheDir, headless, async (page) => {
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     if (!response?.ok()) throw new Error(`HTTP ${response?.status() ?? "unknown"}`);
-    if (isCaptchaUrl(page.url())) throw new Error(`CAPTCHA ${page.url()}`);
-    const data = await catalogPageData(page);
+    let captcha = isCaptchaUrl(page.url());
+    let data = captcha ? null : await catalogPageData(page);
+    if (!captcha && isCatalogDataEmpty(data)) captcha = true;
+    if (captcha && !proxy) {
+      onProgress(`CAPTCHA encountered (no proxy), sleeping ${CAPTCHA_BACKOFF_MS / 1000}s: ${url}`);
+      await delay(CAPTCHA_BACKOFF_MS);
+      const retryResponse = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+      if (!retryResponse?.ok()) throw new Error(`HTTP ${retryResponse?.status() ?? "unknown"}`);
+      if (isCaptchaUrl(page.url())) throw new Error(`CAPTCHA ${page.url()}`);
+      data = await catalogPageData(page);
+    } else if (captcha) {
+      throw new Error(`CAPTCHA ${page.url()}`);
+    }
     await cacheLoadedPage(page, cacheDir, "catalog");
     return data;
   });
 }
 
-async function loadProduct(contexts, executablePath, url, root, proxy, proxyIndex, cacheDir, browserCacheDir, headless) {
+async function loadProduct(contexts, executablePath, url, root, proxy, proxyIndex, cacheDir, browserCacheDir, headless, onProgress) {
   return withPage(contexts, executablePath, proxy, proxyIndex, browserCacheDir, headless, async (page) => {
     const response = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
     if (!response?.ok()) throw new Error(`HTTP ${response?.status() ?? "unknown"}`);
-    if (isCaptchaUrl(page.url())) throw new Error(`CAPTCHA ${page.url()}`);
-    const row = await productData(page, root);
-    if (!row.name || !row.source_sku) throw new Error("product data was not gathered");
+    let captcha = isCaptchaUrl(page.url());
+    let row = captcha ? null : await productData(page, root);
+    if (!captcha && (!row.name || !row.source_sku)) captcha = true;
+    if (captcha && !proxy) {
+      onProgress(`CAPTCHA encountered (no proxy), sleeping ${CAPTCHA_BACKOFF_MS / 1000}s: ${url}`);
+      await delay(CAPTCHA_BACKOFF_MS);
+      const retryResponse = await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+      if (!retryResponse?.ok()) throw new Error(`HTTP ${retryResponse?.status() ?? "unknown"}`);
+      if (isCaptchaUrl(page.url())) throw new Error(`CAPTCHA ${page.url()}`);
+      row = await productData(page, root);
+      if (!row.name || !row.source_sku) throw new Error("product data was not gathered");
+    } else if (captcha) {
+      throw new Error("product data was not gathered");
+    }
     await cacheLoadedPage(page, cacheDir, "product");
     return row;
   });
@@ -198,7 +226,7 @@ export async function scrape({ categoryUrls, maxPages = Infinity, maxProducts = 
         onProgress(`Catalog ${visitedCategories.size} page ${seenPages.size}: ${nextUrl} [proxy ${proxyLabel(picked.proxy)}]`);
         let data;
         try {
-          data = await loadCatalog(contexts, executablePath, nextUrl, picked.proxy, proxyIndex - 1, cacheDir, browserCacheDir, headless);
+          data = await loadCatalog(contexts, executablePath, nextUrl, picked.proxy, proxyIndex - 1, cacheDir, browserCacheDir, headless, onProgress);
         } catch (error) {
           onProgress(`WARN catalog skipped: ${nextUrl} (${error.message})`);
           break;
@@ -220,7 +248,7 @@ export async function scrape({ categoryUrls, maxPages = Infinity, maxProducts = 
         proxyIndex = picked.nextIndex;
         onProgress(`Product ${rows.length + 1}: ${productUrl} [proxy ${proxyLabel(picked.proxy)}]`);
         try {
-          rows.push(await loadProduct(contexts, executablePath, productUrl, root, picked.proxy, proxyIndex - 1, cacheDir, browserCacheDir, headless));
+          rows.push(await loadProduct(contexts, executablePath, productUrl, root, picked.proxy, proxyIndex - 1, cacheDir, browserCacheDir, headless, onProgress));
           await onCheckpoint(rows);
         } catch (error) {
           onProgress(`WARN product skipped: ${productUrl} (${error.message})`);
