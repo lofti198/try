@@ -147,6 +147,7 @@ async function withPage(contexts, executablePath, proxy, proxyIndex, browserCach
   try {
     return await task(page);
   } finally {
+    if (!headless) await delay(2500);
     await page.close();
   }
 }
@@ -218,7 +219,6 @@ export async function scrape({ categoryUrls, maxPages = Infinity, maxProducts = 
       visitedCategories.add(categoryUrl);
       let nextUrl = categoryUrl;
       const seenPages = new Set();
-      const productUrls = new Set();
       while (nextUrl && !seenPages.has(nextUrl) && seenPages.size < maxPages) {
         seenPages.add(nextUrl);
         const picked = nextProxy(proxies, proxyIndex);
@@ -231,7 +231,6 @@ export async function scrape({ categoryUrls, maxPages = Infinity, maxProducts = 
           onProgress(`WARN catalog skipped: ${nextUrl} (${error.message})`);
           break;
         }
-        data.productUrls.forEach((url) => productUrls.add(url));
         for (const childUrl of data.categoryUrls) {
           if (!queuedCategories.has(childUrl)) {
             queuedCategories.add(childUrl);
@@ -240,21 +239,22 @@ export async function scrape({ categoryUrls, maxPages = Infinity, maxProducts = 
         }
         nextUrl = data.nextUrl;
         await delay(delayMs);
-      }
-      for (const productUrl of productUrls) {
-        if (seenProducts.has(productUrl)) continue;
-        seenProducts.add(productUrl);
-        const picked = nextProxy(proxies, proxyIndex);
-        proxyIndex = picked.nextIndex;
-        onProgress(`Product ${rows.length + 1}: ${productUrl} [proxy ${proxyLabel(picked.proxy)}]`);
-        try {
-          rows.push(await loadProduct(contexts, executablePath, productUrl, root, picked.proxy, proxyIndex - 1, cacheDir, browserCacheDir, headless, onProgress));
-          await onCheckpoint(rows);
-        } catch (error) {
-          onProgress(`WARN product skipped: ${productUrl} (${error.message})`);
+
+        for (const productUrl of data.productUrls) {
+          if (seenProducts.has(productUrl)) continue;
+          seenProducts.add(productUrl);
+          const productPicked = nextProxy(proxies, proxyIndex);
+          proxyIndex = productPicked.nextIndex;
+          onProgress(`Product ${rows.length + 1}: ${productUrl} [proxy ${proxyLabel(productPicked.proxy)}]`);
+          try {
+            rows.push(await loadProduct(contexts, executablePath, productUrl, root, productPicked.proxy, proxyIndex - 1, cacheDir, browserCacheDir, headless, onProgress));
+            await onCheckpoint(rows);
+          } catch (error) {
+            onProgress(`WARN product skipped: ${productUrl} (${error.message})`);
+          }
+          await delay(delayMs);
+          if (rows.length >= maxProducts) return rows;
         }
-        await delay(delayMs);
-        if (rows.length >= maxProducts) return rows;
       }
     }
     return rows;
